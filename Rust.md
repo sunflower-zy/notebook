@@ -1604,4 +1604,236 @@ println!("{:?}", map);
 
 # 错误处理
 
+
+
+## Panic! 介绍
+
+Rust 将错误组合成两个主要类别：**可恢复错误**（*recoverable*）和 **不可恢复错误**（*unrecoverable*）。
+
+可恢复错误通常代表向用户报告错误和重试操作是合理的情况，比如未找到文件。
+
+不可恢复错误通常是 bug 的同义词，比如尝试访问超过数组结尾的位置。
+
+大部分语言并不区分这两类错误，并采用类似异常这样方式统一处理他们。
+
+Rust 并没有异常，但是，有可恢复错误 `Result<T, E>` ，和不可恢复(遇到错误时停止程序执行)错误 `panic!`。
+
+Rust 有 `panic!`宏。当执行这个宏时，程序会打印出一个错误信息，展开并清理栈数据，然后接着退出。
+
+
+
+**对应 panic 时的栈展开或终止**
+
+当出现 panic 时，程序默认会开始 **展开**（*unwinding*），这意味着 Rust 会回溯栈并清理它遇到的每一个函数的数据，不过这个回溯并清理的过程有很多工作。
+
+另一种选择是直接 **终止**（*abort*），这会不清理数据就退出程序。那么程序所使用的内存需要由操作系统来清理。
+
+如果你需要项目的最终二进制文件越小越好，panic 时通过在 *Cargo.toml* 的 `[profile]` 部分增加 `panic = 'abort'`，可以由展开切换为终止。例如，如果你想要在release模式中 panic 时直接终止：
+
+```toml
+[profile.release]
+panic = 'abort'
+```
+
+
+
+*acktrace* 是一个执行到目前位置所有被调用的函数的列表。Rust 的 backtrace 跟其他语言中的一样：阅读 backtrace 的关键是从头开始读直到发现你编写的文件。这就是问题的发源地。这一行往上是你的代码所调用的代码；往下则是调用你的代码的代码。
+
+
+
+为了获取带有这些信息的 backtrace，必须启用 debug 标识。当不使用 `--release` 参数运行 cargo build 或 cargo run 时 debug 标识会默认启用，
+
+
+
+## Result 与可恢复错误
+
+```rust
+// Result 枚举
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+```
+
+```rust
+use std::fs::File;
+
+fn main() {
+    let f = File::open("hello.txt"); // 返回 result 枚举
+
+    let f = match f {  // 利用 match 来处理返回的 result 结果
+        Ok(file) => file,
+        Err(error) => {
+            panic!("Problem opening the file: {:?}", error)
+        },
+    };
+}
+
+```
+
+```rust
+use std::fs::File;
+use std::io::ErrorKind;
+
+fn main() {
+    let f = File::open("hello.txt");
+
+    let f = match f {
+        Ok(file) => file,
+        Err(error) => match error.kind() { // 用 match 来匹配不同的错误种类
+            ErrorKind::NotFound => match File::create("hello.txt") {
+                Ok(fc) => fc,
+                Err(e) => panic!("Problem creating the file: {:?}", e),
+            },
+            other_error => panic!("Problem opening the file: {:?}", other_error),
+        },
+    };
+}
+
+// 上面代码更好的写法，利用了闭包等特性
+use std::fs::File;
+use std::io::ErrorKind;
+
+fn main() {
+    let f = File::open("hello.txt").unwrap_or_else(|error| {
+        if error.kind() == ErrorKind::NotFound {
+            File::create("hello.txt").unwrap_or_else(|error| {
+                panic!("Problem creating the file: {:?}", error);
+            })
+        } else {
+            panic!("Problem opening the file: {:?}", error);
+        }
+    });
+}
+
+
+```
+
+
+
+### Panic！ 的简写
+
+```rust
+use std::fs::File;
+
+fn main() {
+    let f = File::open("hello.txt").unwrap(); // unwarp() 前面的操作没错则返回结果，有错则报错
+}
+
+
+use std::fs::File;
+
+fn main() {
+    let f = File::open("hello.txt").expect("Failed to open hello.txt"); //expect() 与 unwarp() 基本一致，只是可以传入我们想显示的错误信息
+}
+
+```
+
+
+
+### 传播错误
+
+当编写一个其实现会调用一些可能会失败的操作的函数时，除了在这个函数中处理错误外，还可以选择让调用者知道这个错误并决定该如何处理。这被称为 **传播**（*propagating*）错误，这样能更好的控制代码调用，因为比起你代码所拥有的上下文，调用者可能拥有更多信息或逻辑来决定应该如何处理错误。
+
+
+
+
+
+```rust
+
+#![allow(unused_variables)]
+fn main() {
+use std::io;
+use std::io::Read;
+use std::fs::File;
+
+fn read_username_from_file() -> Result<String, io::Error> {
+    let f = File::open("hello.txt"); // 返回一个Result
+
+    let mut f = match f { // 对 Result 做 match 处理
+        Ok(file) => file,
+        Err(e) => return Err(e), 
+    };
+
+    let mut s = String::new();
+
+    match f.read_to_string(&mut s) { //同样返回一个 Result
+        Ok(_) => Ok(s),
+        Err(e) => Err(e),
+    }
+}
+}
+
+```
+
+
+
+ Rust 提供了 `?` 问号运算符来使错误传播更容易。
+
+`Result` 值之后的 `?` 被定义为与示例 9-6 中定义的处理 `Result` 值的 `match` 表达式有着完全相同的工作方式。
+
+如果 `Result` 的值是 `Ok`，这个表达式将会返回 `Ok` 中的值而程序将继续执行。
+
+如果值是 `Err`，`Err` 中的值将作为整个函数的返回值，就好像使用了 `return` 关键字一样，这样错误值就被传播给了调用者。
+
+示例 9-6 中的 `match` 表达式与问号运算符所做的有一点不同：
+
+`?` 运算符所使用的错误值被传递给了 `from` 函数，它定义于标准库的 `From` trait 中，其用来将错误从一种类型转换为另一种类型。
+
+当 `?` 运算符调用 `from` 函数时，收到的错误类型被转换为定义为当前函数返回的错误类型。
+
+这在当一个函数返回一个错误类型来代表所有可能失败的方式时很有用，即使其可能会因很多种原因失败。
+
+只要每一个错误类型都实现了 `from` 函数来定义如将其转换为返回的错误类型，`?` 运算符会自动处理这些转换。
+
+```rust
+
+#![allow(unused_variables)]
+fn main() {
+use std::io;
+use std::io::Read;
+use std::fs::File;
+
+fn read_username_from_file() -> Result<String, io::Error> {
+    let mut s = String::new();
+
+    File::open("hello.txt")?.read_to_string(&mut s)?; // ? 后可以跟 . 链式调用
+
+    Ok(s)
+}
+}
+
+```
+
+
+
+
+
+只能在返回 `Result` 或者其它实现了 `std::ops::Try` 的类型的函数中使用 `?` 运算符。
+
+当你期望在不返回 `Result` 的函数中调用其他返回 `Result` 的函数时使用 `?` 的话，有两种方法修复这个问题。
+
+- 一种技巧是将函数返回值类型修改为 `Result<T, E>`，如果没有其它限制阻止你这么做的话。
+
+- 另一种技巧是通过合适的方法使用 `match` 或 `Result` 的方法之一来处理 `Result<T, E>`。
+
+
+
+`main` 函数是特殊的，其必须返回什么类型是有限制的。
+
+`main` 函数的一个有效的返回值是 `()`，同时出于方便，另一个有效的返回值是 `Result<T, E>`，
+
+
+
+
+
+
+
+
+
+
+
+
+
 # 范型、trait 与生命周期
+
